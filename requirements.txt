@@ -1,0 +1,10 @@
+fastapi[standard]
+uvicorn
+requests
+python-dotenv
+pydantic
+langchain
+langchain-core
+langchain-google-genai
+apscheduler==3.10.4
+xmltodict==0.13.0
