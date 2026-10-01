@@ -64,6 +64,9 @@ def get_weather(latitude: str, longitude: str):
         "relative_humidity_2m,precipitation,pressure_msl,soil_temperature_0cm,soil_temperature_6cm,"
         "visibility,wind_speed_80m,wind_direction_10m,wind_direction_80m,apparent_temperature,"
         "soil_temperature_18cm,uv_index,is_day,sunshine_duration&models=best_match&forecast_days=14"
+        "&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m,visibility,uv_index"
+        "&hourly=temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m,precipitation,visibility,uv_index,is_day"
+        "&timezone=auto&forecast_days=7"
     )
     try:
         return requests.get(weather_url).json()
