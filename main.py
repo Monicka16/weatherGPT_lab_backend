@@ -3,7 +3,7 @@ import sys
 import logging
 import requests
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional
 
 # Force root directory into sys.path for Vercel runtime resolution
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -87,7 +87,7 @@ async def lifespan(app: FastAPI):
     tools = [get_geolocation, get_weather]
 
     system_prompt = SystemMessage(
-    """You are a weather expert with access to 2 tools.
+        """You are a weather expert with access to 2 tools.
     Use get_geolocation() to get the geolocation for a city mentioned in the user prompt.
     Use get_weather() to get the weather details from the tool. It returns data in JSON format.
     If the city is not given, use the geolocation directly from the user prompt.
@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
     Never output raw JSON keys like is_day. Translate is_day: 0 to Nighttime and is_day: 1 to Daytime.
     Do not use LLM internal knowledge for weather—always use the provided tools.
     """
-)
+    )
 
     agent_executor = create_agent(
         model=llm,
@@ -136,7 +136,10 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     conversation_id: str = Field(..., min_length=1, example="user1-session1")
-    message: str = Field(..., example="can i play football outside now, i am in 12.9716,77.59?")
+    message: str = Field(..., example="can i play football outside now?")
+    latitude: Optional[float] = Field(None, example=12.9716)
+    longitude: Optional[float] = Field(None, example=77.5946)
+    city_name: Optional[str] = Field(None, example="Bengaluru")
 
 class ChatResponse(BaseModel):
     reply: str
@@ -161,9 +164,18 @@ async def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=500, detail="Agent is not initialized.")
     
     try:
-        # Pass user message to LangChain Agent
+        prompt_message = request.message
+        
+        # Inject location coordinates/context if available and not explicitly mentioned
+        if request.latitude is not None and request.longitude is not None:
+            location_ctx = f" (User's current coordinates: latitude={request.latitude}, longitude={request.longitude}"
+            if request.city_name:
+                location_ctx += f", city={request.city_name}"
+            location_ctx += ")"
+            prompt_message += location_ctx
+
         response = await agent_executor.ainvoke({
-            "messages": [("user", request.message)]
+            "messages": [("user", prompt_message)]
         })
         
         last_message = response["messages"][-1]
