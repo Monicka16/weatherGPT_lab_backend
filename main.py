@@ -53,11 +53,13 @@ def get_geolocation(city: str):
 
 
 @tool(description="Fetch the weather details for the given latitude and longitude.")
-def get_weather(latitude: str, longitude: str):
+def get_weather(latitude: str, longitude: str,temperature_unit: str = "celsius"):
     """Fetch the weather details for the given latitude and longitude."""
     url = os.environ.get("WEATHER_API_EP", "https://api.open-meteo.com/v1/forecast")
+    temperature_unit = ("fahrenheit" if temperature_unit.lower() == "fahrenheit" else "celsius")
     weather_url = (
         f"{url}?latitude={latitude}&longitude={longitude}"
+        f"&temperature_unit={temperature_unit}"
         "&daily=weather_code,sunrise,sunset,daylight_duration,sunshine_duration,moonset,moonrise,"
         "uv_index_max,apparent_temperature_min,apparent_temperature_max,temperature_2m_min,"
         "temperature_2m_max,rain_sum&hourly=temperature_2m,weather_code,wind_speed_10m,"
@@ -500,7 +502,18 @@ is_day = 0 → Nighttime
 
 Use:
 
+Temperature units:
+
+Use the temperature unit specified by the application.
+
+If the application temperature unit is "celsius":
 Temperature → °C
+
+If the application temperature unit is "fahrenheit":
+Temperature → °F
+
+The weather tool must be called using the selected temperature unit.
+
 Precipitation → mm
 Wind speed → km/h
 Visibility → km
@@ -695,6 +708,7 @@ class ChatRequest(BaseModel):
     latitude: Optional[float] = Field(None, example=12.9716)
     longitude: Optional[float] = Field(None, example=77.5946)
     city_name: Optional[str] = Field(None, example="Bengaluru")
+    temperature_unit: str = Field("celsius", example="celsius")
 
 class ChatResponse(BaseModel):
     reply: str
@@ -720,6 +734,7 @@ async def chat_endpoint(request: ChatRequest):
     
     try:
         prompt_message = request.message
+        prompt_message += f" (Application temperature unit: {request.temperature_unit})"
         
         # Inject location coordinates/context if available and not explicitly mentioned
         if request.latitude is not None and request.longitude is not None:
