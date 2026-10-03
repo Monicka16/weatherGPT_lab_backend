@@ -504,7 +504,11 @@ Use:
 
 Temperature units:
 
-Use the temperature unit specified by the application.
+The application provides a temperature unit with every user request.
+
+The application temperature unit will be either "celsius" or "fahrenheit".
+
+You MUST use the application's temperature unit for ALL temperature values.
 
 If the application temperature unit is "celsius":
 Temperature → °C
@@ -512,7 +516,9 @@ Temperature → °C
 If the application temperature unit is "fahrenheit":
 Temperature → °F
 
-The weather tool must be called using the selected temperature unit.
+When calling get_weather, you MUST pass the application's temperature unit as the temperature_unit argument.
+
+NEVER convert or display temperature in a different unit from the application's selected temperature unit.
 
 Precipitation → mm
 Wind speed → km/h
