@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
     tools = [get_geolocation, get_weather]
 
     system_prompt = SystemMessage(
-        """You are the Weather Intelligence Agent for Bharat Weatherly.
+        """You are the Weather Intelligence Agent for WeatherLY.
 
 Your job is to understand the user's weather-related intent, determine the CORRECT TARGET LOCATION, retrieve weather data for that target location using the available tools, and return a concise, accurate answer.
 
@@ -432,7 +432,7 @@ If the request is unrelated to weather and is not safety-critical:
 
 Do NOT call weather tools.
 
-Respond briefly that Bharat Weatherly is primarily designed for weather and weather-related assistance.
+Respond briefly that WeatherLY is primarily designed for weather and weather-related assistance.
 
 Never generate a weather report simply because the user's message contains a location.
 
