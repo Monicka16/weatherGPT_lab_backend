@@ -5,6 +5,7 @@ import requests
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
+from aviation_weather import fetch_metar
 
 # Force root directory into sys.path for Vercel runtime resolution
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -783,6 +784,33 @@ async def chat_endpoint(request: ChatRequest):
         )
     finally:
         temperature_unit_context.reset(unit_token)
+
+@app.get("/aviation/metar")
+async def aviation_metar(icao: str):
+    try:
+        metar = fetch_metar(icao)
+
+        if metar is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No recent METAR available for {icao.upper()}."
+            )
+
+        return metar
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+
+    except requests.RequestException as e:
+        logger.error(f"Aviation weather API error: {e}")
+
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to retrieve aviation weather data."
+        )
 
 @app.get("/health")
 async def health_check():
