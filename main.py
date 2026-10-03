@@ -3,6 +3,7 @@ import sys
 import logging
 import requests
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any, Optional
 
 # Force root directory into sys.path for Vercel runtime resolution
@@ -33,6 +34,11 @@ logger = logging.getLogger(__name__)
 # Global variable to hold the initialized agent executor
 agent_executor = None
 
+temperature_unit_context: ContextVar[str] = ContextVar(
+    "temperature_unit_context",
+    default="celsius",
+)
+
 
 # --- 1. Tool Definitions ---
 @tool(description="Fetch Geolocation (latitude, longitude) for a given city name.")
@@ -54,13 +60,12 @@ def get_geolocation(city: str):
 
 @tool(description=(
         "Fetch weather details for the given latitude and longitude. "
-        "temperature_unit is REQUIRED and must be either 'celsius' or 'fahrenheit'. "
         "Always use the application's selected temperature unit."
     ))
-def get_weather(latitude: str, longitude: str,temperature_unit: str):
+def get_weather(latitude: str, longitude: str):
     """Fetch the weather details for for a geographic location."""
     url = os.environ.get("WEATHER_API_EP", "https://api.open-meteo.com/v1/forecast")
-    temperature_unit = ("fahrenheit" if temperature_unit.lower() == "fahrenheit" else "celsius")
+    temperature_unit = temperature_unit = temperature_unit_context.get()
     weather_url = (
         f"{url}?latitude={latitude}&longitude={longitude}"
         f"&temperature_unit={temperature_unit}"
@@ -742,10 +747,16 @@ def extract_text(content: Any) -> str:
 async def chat_endpoint(request: ChatRequest):
     if not agent_executor:
         raise HTTPException(status_code=500, detail="Agent is not initialized.")
+    unit = (
+        "fahrenheit"
+        if request.temperature_unit.lower() == "fahrenheit"
+        else "celsius"
+    )
+    unit_token = temperature_unit_context.set(unit)
     
     try:
         prompt_message = request.message
-        prompt_message += f" (Application temperature unit: {request.temperature_unit})"
+        prompt_message += f" (Application temperature unit: {unit})"
         
         # Inject location coordinates/context if available and not explicitly mentioned
         if request.latitude is not None and request.longitude is not None:
@@ -770,6 +781,8 @@ async def chat_endpoint(request: ChatRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail="An error occurred while processing your request. Please try again."
         )
+    finally:
+        temperature_unit_context.reset(unit_token)
 
 @app.get("/health")
 async def health_check():
