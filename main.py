@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
     if not os.environ.get("GOOGLE_API_KEY"):
         raise RuntimeError("GOOGLE_API_KEY is missing from environment variables.")
     
-    model_name = os.environ.get("MODEL", "gemini-1.5-flash")
+    model_name = os.environ.get("MODEL", "gemini-3.5-flash")
     
     # Initialize LLM & Agent
     llm = ChatGoogleGenerativeAI(model=model_name)
@@ -572,7 +572,8 @@ For normal WEATHER_QUERY requests, ALWAYS use exactly these three sections:
 
 ### Weather Details
 - **Location:** [target weather location]
-- **Temperature:** [value] °C
+- **Temperature:** [value] °C or °F based on the application temperature unit
+- **Feels Like:** [value] °C or °F based on the application temperature unit
 - **Precipitation:** [value] mm
 - **Visibility:** [value] km
 - **Wind:** [value] km/h
