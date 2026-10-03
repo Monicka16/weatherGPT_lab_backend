@@ -52,9 +52,13 @@ def get_geolocation(city: str):
         return f"Error fetching coordinates: {e}"
 
 
-@tool(description="Fetch the weather details for the given latitude and longitude.")
-def get_weather(latitude: str, longitude: str,temperature_unit: str = "celsius"):
-    """Fetch the weather details for the given latitude and longitude."""
+@tool(description=(
+        "Fetch weather details for the given latitude and longitude. "
+        "temperature_unit is REQUIRED and must be either 'celsius' or 'fahrenheit'. "
+        "Always use the application's selected temperature unit."
+    ))
+def get_weather(latitude: str, longitude: str,temperature_unit: str):
+    """Fetch the weather details for for a geographic location."""
     url = os.environ.get("WEATHER_API_EP", "https://api.open-meteo.com/v1/forecast")
     temperature_unit = ("fahrenheit" if temperature_unit.lower() == "fahrenheit" else "celsius")
     weather_url = (
