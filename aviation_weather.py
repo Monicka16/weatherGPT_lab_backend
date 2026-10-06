@@ -2,6 +2,9 @@ import os
 
 import requests
 
+from dotenv import load_dotenv
+load_dotenv()
+
 
 AVIATION_API_BASE = os.environ.get("AVIATION_API_BASE")
 

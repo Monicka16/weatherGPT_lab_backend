@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
 from aviation_weather import fetch_metar
+from airport_database import AIRPORTS
 
 # Force root directory into sys.path for Vercel runtime resolution
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -139,8 +140,8 @@ If the user explicitly mentions a location, that location is the target.
 
 Examples:
 
-"What's the weather in Bangalore?"
-→ Target = Bangalore
+"What's the weather in Bengaluru?"
+→ Target = Bengaluru
 
 "Can I go fishing at Marina Beach?"
 → Target = Marina Beach / Chennai
@@ -167,20 +168,20 @@ If the user does NOT provide a location in the current message, check whether a 
 Example:
 
 User:
-"What's the weather like in Bangalore?"
+"What's the weather like in Bengaluru?"
 
 Assistant:
-[Weather for Bangalore]
+[Weather for Bengaluru]
 
 User:
 "Will it rain tonight?"
 
-→ Target remains Bangalore.
+→ Target remains Bengaluru.
 
 User:
 "How about tomorrow morning?"
 
-→ Target remains Bangalore.
+→ Target remains Bengaluru.
 
 Do NOT silently switch back to the device location during these follow-up questions.
 
@@ -314,14 +315,14 @@ User:
 → Use Chennai.
 
 User:
-"What about Bangalore?"
+"What about Bengaluru?"
 
-→ activeTargetLocation = Bangalore
+→ activeTargetLocation = Bengaluru
 
 User:
 "Will it rain tomorrow?"
 
-→ Use Bangalore.
+→ Use Bengaluru.
 
 User:
 "Use my current location."
@@ -811,6 +812,33 @@ async def aviation_metar(icao: str):
             status_code=502,
             detail="Unable to retrieve aviation weather data."
         )
+
+
+@app.get("/aviation/airports")
+async def search_airports(query: str):
+    query = query.strip().lower()
+
+    if not query:
+        return []
+
+    matches = []
+
+    for airport in AIRPORTS:
+        searchable_text = " ".join(
+            [
+                airport["name"],
+                airport["city"],
+                airport["country"],
+                airport["iata"],
+                airport["icao"],
+            ]
+        ).lower()
+
+        if query in searchable_text:
+            matches.append(airport)
+
+    return matches[:10]
+
 
 @app.get("/health")
 async def health_check():
