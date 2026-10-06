@@ -1,7 +1,14 @@
+import os
+
 import requests
 
 
-AVIATION_API_BASE = "https://aviationweather.gov/api/data"
+AVIATION_API_BASE = os.environ.get("AVIATION_API_BASE")
+
+if not AVIATION_API_BASE:
+    raise RuntimeError(
+        "AVIATION_API_BASE is missing from environment variables."
+    )
 
 
 def fetch_metar(icao: str):
