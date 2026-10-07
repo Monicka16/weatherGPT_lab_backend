@@ -841,19 +841,88 @@ async def search_airports(query: str):
 
 @app.get("/alerts")
 async def get_sachet_alerts(lat: float, lng: float):
-    """Server-side proxy fetch for SACHET / NDMA hazard alerts to prevent browser CORS issues."""
+    """Server-side fetch for SACHET/NDMA alerts with dynamic Open-Meteo weather hazard fallbacks."""
+    alerts = []
+    
+    # 1. Try querying SACHET NDMA API first
     try:
         url = f"https://sachet.ndma.gov.in/api/v1/alerts?lat={lat}&lng={lng}"
-        res = requests.get(url, headers={"Accept": "application/json"}, timeout=8)
-        
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list):
-                return data
-        return []
+        res = requests.get(url, headers={"Accept": "application/json"}, timeout=5)
+        if res.status_code == 200 and isinstance(res.json(), list):
+            alerts = res.json()
     except Exception as e:
-        logger.error(f"Failed to fetch SACHET alerts: {e}")
-        return []
+        logger.error(f"SACHET query error: {e}")
+
+    # If SACHET returns active hazard warnings, return them
+    if alerts:
+        return alerts
+
+    # 2. Dynamic Fallback: Evaluate real-time atmospheric hazards via Open-Meteo
+    try:
+        om_url = (
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lng}"
+            "&current=weather_code,wind_speed_10m,precipitation,uv_index"
+        )
+        om_res = requests.get(om_url, timeout=5)
+        if om_res.status_code == 200:
+            om_data = om_res.json().get("current", {})
+            w_code = om_data.get("weather_code", 0)
+            wind = om_data.get("wind_speed_10m", 0)
+            precip = om_data.get("precipitation", 0)
+            uv = om_data.get("uv_index", 0)
+
+            # Thunderstorms / Severe Convective Cloud Activity
+            if w_code >= 95:
+                alerts.append({
+                    "id": f"om-storm-{int(lat*100)}",
+                    "headline": "Severe Thunderstorm Activity",
+                    "severity": "High",
+                    "category": "Meteorological",
+                    "description": "Lightning and convective thunderstorm activity observed in your area. Limit outdoor exposure.",
+                    "areaDesc": f"Coordinates ({lat:.2f}, {lng:.2f})",
+                    "statusType": "present",
+                    "source": "Open-Meteo Telemetry"
+                })
+            # Heavy Rain
+            elif precip > 5.0 or (50 <= w_code <= 67) or (80 <= w_code <= 82):
+                alerts.append({
+                    "id": f"om-rain-{int(lat*100)}",
+                    "headline": "Precipitation & Rain Advisory",
+                    "severity": "Moderate",
+                    "category": "Meteorological",
+                    "description": "Active rainfall and reduced surface visibility detected. Exercise caution on roadways.",
+                    "areaDesc": f"Coordinates ({lat:.2f}, {lng:.2f})",
+                    "statusType": "present",
+                    "source": "Open-Meteo Telemetry"
+                })
+            # High Wind Speeds
+            elif wind > 25:
+                alerts.append({
+                    "id": f"om-wind-{int(lat*100)}",
+                    "headline": "High Wind Advisory",
+                    "severity": "Moderate",
+                    "category": "Meteorological",
+                    "description": f"Sustained elevated wind speeds of {wind} km/h recorded in your zone radius.",
+                    "areaDesc": f"Coordinates ({lat:.2f}, {lng:.2f})",
+                    "statusType": "present",
+                    "source": "Open-Meteo Telemetry"
+                })
+            # High UV Index
+            elif uv >= 8:
+                alerts.append({
+                    "id": f"om-uv-{int(lat*100)}",
+                    "headline": "Elevated Solar UV Radiation Warning",
+                    "severity": "Moderate",
+                    "category": "Meteorological",
+                    "description": f"UV Index reaching {uv}. Apply sun protection and avoid prolonged unshaded solar exposure.",
+                    "areaDesc": f"Coordinates ({lat:.2f}, {lng:.2f})",
+                    "statusType": "present",
+                    "source": "Open-Meteo Telemetry"
+                })
+    except Exception as e:
+        logger.error(f"Open-Meteo fallback error: {e}")
+
+    return alerts
 
 
 @app.get("/health")
