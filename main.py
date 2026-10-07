@@ -7,6 +7,9 @@ from contextvars import ContextVar
 from typing import Any, Optional
 from aviation_weather import fetch_metar
 from airport_database import AIRPORTS
+import xml.etree.ElementTree as ET
+import re
+from email.utils import parsedate_to_datetime
 
 # Force root directory into sys.path for Vercel runtime resolution
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -721,12 +724,11 @@ app.add_middleware(
 )
 
 class ChatRequest(BaseModel):
-    conversation_id: str = Field(..., min_length=1, example="user1-session1")
-    message: str = Field(..., example="can i play football outside now?")
-    latitude: Optional[float] = Field(None, example=12.9716)
-    longitude: Optional[float] = Field(None, example=77.5946)
-    city_name: Optional[str] = Field(None, example="Bengaluru")
-    temperature_unit: str = Field("celsius", example="celsius")
+    message: str = Field(..., json_schema_extra={"example": "What is the weather in Bengaluru?"})
+    latitude: Optional[float] = Field(None, json_schema_extra={"example": 12.9716})
+    longitude: Optional[float] = Field(None, json_schema_extra={"example": 77.5946})
+    city_name: Optional[str] = Field(None, json_schema_extra={"example": "Bengaluru"})
+    temperature_unit: str = Field("celsius", json_schema_extra={"example": "celsius"})
 
 class ChatResponse(BaseModel):
     reply: str
@@ -742,6 +744,37 @@ def extract_text(content: Any) -> str:
             return content[0]["text"]
         return str(content[0])
     return str(content)
+
+SACHET_RSS = "https://sachet.ndma.gov.in/cap_public_website/rss/rss_india.xml"
+
+
+def reverse_geocode(lat: float, lng: float):
+    """Returns a list of place names (district, city, locality...) for the coordinates."""
+    try:
+        r = requests.get(
+            "https://api.bigdatacloud.net/data/reverse-geocode-client",
+            params={"latitude": lat, "longitude": lng, "localityLanguage": "en"},
+            timeout=5,
+        )
+        r.raise_for_status()
+        d = r.json()
+
+        names = [d.get("city"), d.get("locality")]
+        for a in d.get("localityInfo", {}).get("administrative", []):
+            names.append(a.get("name"))
+
+        cleaned = []
+        for n in names:
+            if not n:
+                continue
+            n = re.sub(r"\s+(district|taluk|tehsil)$", "", n, flags=re.I).strip()
+            if len(n) > 2 and n.lower() not in ("india", "tamil nadu") and n not in cleaned:
+                cleaned.append(n)
+        return cleaned, d.get("principalSubdivision", "")
+    except Exception as e:
+        logger.error(f"Reverse geocode failed: {e}")
+        return [], ""
+
 
 
 # --- 5. Endpoints ---
@@ -840,90 +873,53 @@ async def search_airports(query: str):
     return matches[:10]
 
 @app.get("/alerts")
-async def get_sachet_alerts(lat: float, lng: float):
-    """Server-side fetch for SACHET/NDMA alerts with dynamic Open-Meteo weather hazard fallbacks."""
+def get_sachet_alerts(lat: float, lng: float):   # plain def, not async (requests is blocking)
+    names, state = reverse_geocode(lat, lng)
+    logger.info(f"alerts lookup: names={names} state={state!r}")
+    if not names:
+        return []
+
+    pattern = re.compile(r"\b(" + "|".join(re.escape(n) for n in names) + r")\b", re.IGNORECASE)
+
+    try:
+        res = requests.get(SACHET_RSS, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        res.raise_for_status()
+        root = ET.fromstring(res.content)      # bytes, so the XML encoding header is honored
+    except (requests.RequestException, ET.ParseError) as e:
+        logger.error(f"SACHET feed error: {e}")
+        raise HTTPException(status_code=502, detail="Unable to retrieve SACHET alerts.")
+
     alerts = []
-    
-    # 1. Try querying SACHET NDMA API first
-    try:
-        url = f"https://sachet.ndma.gov.in/api/v1/alerts?lat={lat}&lng={lng}"
-        res = requests.get(url, headers={"Accept": "application/json"}, timeout=5)
-        if res.status_code == 200 and isinstance(res.json(), list):
-            alerts = res.json()
-    except Exception as e:
-        logger.error(f"SACHET query error: {e}")
+    for item in root.findall("./channel/item"):
+        title = (item.findtext("title") or "").strip()
+        if not pattern.search(title):
+            continue
 
-    # If SACHET returns active hazard warnings, return them
-    if alerts:
-        return alerts
+        author = item.findtext("author") or ""
+        source = author[author.find("(") + 1 : author.rfind(")")] if "(" in author else "NDMA SACHET"
+        low = title.lower()
+        severity = "Severe" if "severe flood" in low else "Moderate"
 
-    # 2. Dynamic Fallback: Evaluate real-time atmospheric hazards via Open-Meteo
-    try:
-        om_url = (
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lng}"
-            "&current=weather_code,wind_speed_10m,precipitation,uv_index"
-        )
-        om_res = requests.get(om_url, timeout=5)
-        if om_res.status_code == 200:
-            om_data = om_res.json().get("current", {})
-            w_code = om_data.get("weather_code", 0)
-            wind = om_data.get("wind_speed_10m", 0)
-            precip = om_data.get("precipitation", 0)
-            uv = om_data.get("uv_index", 0)
+        pub = item.findtext("pubDate")
+        try:
+            published = parsedate_to_datetime(pub).isoformat() if pub else None
+        except Exception:
+            published = pub
 
-            # Thunderstorms / Severe Convective Cloud Activity
-            if w_code >= 95:
-                alerts.append({
-                    "id": f"om-storm-{int(lat*100)}",
-                    "headline": "Severe Thunderstorm Activity",
-                    "severity": "High",
-                    "category": "Meteorological",
-                    "description": "Lightning and convective thunderstorm activity observed in your area. Limit outdoor exposure.",
-                    "areaDesc": f"Coordinates ({lat:.2f}, {lng:.2f})",
-                    "statusType": "present",
-                    "source": "Open-Meteo Telemetry"
-                })
-            # Heavy Rain
-            elif precip > 5.0 or (50 <= w_code <= 67) or (80 <= w_code <= 82):
-                alerts.append({
-                    "id": f"om-rain-{int(lat*100)}",
-                    "headline": "Precipitation & Rain Advisory",
-                    "severity": "Moderate",
-                    "category": "Meteorological",
-                    "description": "Active rainfall and reduced surface visibility detected. Exercise caution on roadways.",
-                    "areaDesc": f"Coordinates ({lat:.2f}, {lng:.2f})",
-                    "statusType": "present",
-                    "source": "Open-Meteo Telemetry"
-                })
-            # High Wind Speeds
-            elif wind > 25:
-                alerts.append({
-                    "id": f"om-wind-{int(lat*100)}",
-                    "headline": "High Wind Advisory",
-                    "severity": "Moderate",
-                    "category": "Meteorological",
-                    "description": f"Sustained elevated wind speeds of {wind} km/h recorded in your zone radius.",
-                    "areaDesc": f"Coordinates ({lat:.2f}, {lng:.2f})",
-                    "statusType": "present",
-                    "source": "Open-Meteo Telemetry"
-                })
-            # High UV Index
-            elif uv >= 8:
-                alerts.append({
-                    "id": f"om-uv-{int(lat*100)}",
-                    "headline": "Elevated Solar UV Radiation Warning",
-                    "severity": "Moderate",
-                    "category": "Meteorological",
-                    "description": f"UV Index reaching {uv}. Apply sun protection and avoid prolonged unshaded solar exposure.",
-                    "areaDesc": f"Coordinates ({lat:.2f}, {lng:.2f})",
-                    "statusType": "present",
-                    "source": "Open-Meteo Telemetry"
-                })
-    except Exception as e:
-        logger.error(f"Open-Meteo fallback error: {e}")
+        alerts.append({
+            "id": item.findtext("guid") or item.findtext("link"),
+            "headline": title,
+            "severity": severity,
+            "category": item.findtext("category") or "Met",
+            "description": title,
+            "areaDesc": f"{names[0]}, {state}",
+            "statusType": "present",
+            "source": f"NDMA SACHET / {source}",
+            "link": item.findtext("link"),
+            "published": published,
+        })
 
-    return alerts
-
+    return alerts[:10]
 
 @app.get("/health")
 async def health_check():
