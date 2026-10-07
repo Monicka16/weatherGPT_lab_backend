@@ -3,7 +3,10 @@ import sys
 import logging
 import requests
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any, Optional
+from aviation_weather import fetch_metar
+from airport_database import AIRPORTS
 
 # Force root directory into sys.path for Vercel runtime resolution
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +36,11 @@ logger = logging.getLogger(__name__)
 # Global variable to hold the initialized agent executor
 agent_executor = None
 
+temperature_unit_context: ContextVar[str] = ContextVar(
+    "temperature_unit_context",
+    default="celsius",
+)
+
 
 # --- 1. Tool Definitions ---
 @tool(description="Fetch Geolocation (latitude, longitude) for a given city name.")
@@ -52,12 +60,17 @@ def get_geolocation(city: str):
         return f"Error fetching coordinates: {e}"
 
 
-@tool(description="Fetch the weather details for the given latitude and longitude.")
+@tool(description=(
+        "Fetch weather details for the given latitude and longitude. "
+        "Always use the application's selected temperature unit."
+    ))
 def get_weather(latitude: str, longitude: str):
-    """Fetch the weather details for the given latitude and longitude."""
+    """Fetch the weather details for for a geographic location."""
     url = os.environ.get("WEATHER_API_EP", "https://api.open-meteo.com/v1/forecast")
+    temperature_unit = temperature_unit = temperature_unit_context.get()
     weather_url = (
         f"{url}?latitude={latitude}&longitude={longitude}"
+        f"&temperature_unit={temperature_unit}"
         "&daily=weather_code,sunrise,sunset,daylight_duration,sunshine_duration,moonset,moonrise,"
         "uv_index_max,apparent_temperature_min,apparent_temperature_max,temperature_2m_min,"
         "temperature_2m_max,rain_sum&hourly=temperature_2m,weather_code,wind_speed_10m,"
@@ -83,14 +96,14 @@ async def lifespan(app: FastAPI):
     if not os.environ.get("GOOGLE_API_KEY"):
         raise RuntimeError("GOOGLE_API_KEY is missing from environment variables.")
     
-    model_name = os.environ.get("MODEL", "gemini-1.5-flash")
+    model_name = os.environ.get("MODEL", "gemini-3.5-flash")
     
     # Initialize LLM & Agent
     llm = ChatGoogleGenerativeAI(model=model_name)
     tools = [get_geolocation, get_weather]
 
     system_prompt = SystemMessage(
-        """You are the Weather Intelligence Agent for Bharat Weatherly.
+        """You are the Weather Intelligence Agent for WeatherLY.
 
 Your job is to understand the user's weather-related intent, determine the CORRECT TARGET LOCATION, retrieve weather data for that target location using the available tools, and return a concise, accurate answer.
 
@@ -127,8 +140,8 @@ If the user explicitly mentions a location, that location is the target.
 
 Examples:
 
-"What's the weather in Bangalore?"
-→ Target = Bangalore
+"What's the weather in Bengaluru?"
+→ Target = Bengaluru
 
 "Can I go fishing at Marina Beach?"
 → Target = Marina Beach / Chennai
@@ -155,20 +168,20 @@ If the user does NOT provide a location in the current message, check whether a 
 Example:
 
 User:
-"What's the weather like in Bangalore?"
+"What's the weather like in Bengaluru?"
 
 Assistant:
-[Weather for Bangalore]
+[Weather for Bengaluru]
 
 User:
 "Will it rain tonight?"
 
-→ Target remains Bangalore.
+→ Target remains Bengaluru.
 
 User:
 "How about tomorrow morning?"
 
-→ Target remains Bangalore.
+→ Target remains Bengaluru.
 
 Do NOT silently switch back to the device location during these follow-up questions.
 
@@ -302,14 +315,14 @@ User:
 → Use Chennai.
 
 User:
-"What about Bangalore?"
+"What about Bengaluru?"
 
-→ activeTargetLocation = Bangalore
+→ activeTargetLocation = Bengaluru
 
 User:
 "Will it rain tomorrow?"
 
-→ Use Bangalore.
+→ Use Bengaluru.
 
 User:
 "Use my current location."
@@ -420,7 +433,7 @@ If the request is unrelated to weather and is not safety-critical:
 
 Do NOT call weather tools.
 
-Respond briefly that Bharat Weatherly is primarily designed for weather and weather-related assistance.
+Respond briefly that WeatherLY is primarily designed for weather and weather-related assistance.
 
 Never generate a weather report simply because the user's message contains a location.
 
@@ -500,7 +513,24 @@ is_day = 0 → Nighttime
 
 Use:
 
+Temperature units:
+
+The application provides a temperature unit with every user request.
+
+The application temperature unit will be either "celsius" or "fahrenheit".
+
+You MUST use the application's temperature unit for ALL temperature values.
+
+If the application temperature unit is "celsius":
 Temperature → °C
+
+If the application temperature unit is "fahrenheit":
+Temperature → °F
+
+When calling get_weather, you MUST pass the application's temperature unit as the temperature_unit argument.
+
+NEVER convert or display temperature in a different unit from the application's selected temperature unit.
+
 Precipitation → mm
 Wind speed → km/h
 Visibility → km
@@ -559,7 +589,8 @@ For normal WEATHER_QUERY requests, ALWAYS use exactly these three sections:
 
 ### Weather Details
 - **Location:** [target weather location]
-- **Temperature:** [value] °C
+- **Temperature:** [value] °C or °F based on the application temperature unit
+- **Feels Like:** [value] °C or °F based on the application temperature unit
 - **Precipitation:** [value] mm
 - **Visibility:** [value] km
 - **Wind:** [value] km/h
@@ -695,6 +726,7 @@ class ChatRequest(BaseModel):
     latitude: Optional[float] = Field(None, example=12.9716)
     longitude: Optional[float] = Field(None, example=77.5946)
     city_name: Optional[str] = Field(None, example="Bengaluru")
+    temperature_unit: str = Field("celsius", example="celsius")
 
 class ChatResponse(BaseModel):
     reply: str
@@ -717,9 +749,16 @@ def extract_text(content: Any) -> str:
 async def chat_endpoint(request: ChatRequest):
     if not agent_executor:
         raise HTTPException(status_code=500, detail="Agent is not initialized.")
+    unit = (
+        "fahrenheit"
+        if request.temperature_unit.lower() == "fahrenheit"
+        else "celsius"
+    )
+    unit_token = temperature_unit_context.set(unit)
     
     try:
         prompt_message = request.message
+        prompt_message += f" (Application temperature unit: {unit})"
         
         # Inject location coordinates/context if available and not explicitly mentioned
         if request.latitude is not None and request.longitude is not None:
@@ -744,6 +783,62 @@ async def chat_endpoint(request: ChatRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail="An error occurred while processing your request. Please try again."
         )
+    finally:
+        temperature_unit_context.reset(unit_token)
+
+@app.get("/aviation/metar")
+async def aviation_metar(icao: str):
+    try:
+        metar = fetch_metar(icao)
+
+        if metar is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No recent METAR available for {icao.upper()}."
+            )
+
+        return metar
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+
+    except requests.RequestException as e:
+        logger.error(f"Aviation weather API error: {e}")
+
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to retrieve aviation weather data."
+        )
+
+
+@app.get("/aviation/airports")
+async def search_airports(query: str):
+    query = query.strip().lower()
+
+    if not query:
+        return []
+
+    matches = []
+
+    for airport in AIRPORTS:
+        searchable_text = " ".join(
+            [
+                airport["name"],
+                airport["city"],
+                airport["country"],
+                airport["iata"],
+                airport["icao"],
+            ]
+        ).lower()
+
+        if query in searchable_text:
+            matches.append(airport)
+
+    return matches[:10]
+
 
 @app.get("/health")
 async def health_check():
