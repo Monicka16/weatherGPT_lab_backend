@@ -839,6 +839,22 @@ async def search_airports(query: str):
 
     return matches[:10]
 
+@app.get("/alerts")
+async def get_sachet_alerts(lat: float, lng: float):
+    """Server-side proxy fetch for SACHET / NDMA hazard alerts to prevent browser CORS issues."""
+    try:
+        url = f"https://sachet.ndma.gov.in/api/v1/alerts?lat={lat}&lng={lng}"
+        res = requests.get(url, headers={"Accept": "application/json"}, timeout=8)
+        
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list):
+                return data
+        return []
+    except Exception as e:
+        logger.error(f"Failed to fetch SACHET alerts: {e}")
+        return []
+
 
 @app.get("/health")
 async def health_check():
