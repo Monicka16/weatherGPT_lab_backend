@@ -7,6 +7,9 @@ from contextvars import ContextVar
 from typing import Any, Optional
 from aviation_weather import fetch_metar
 from airport_database import AIRPORTS
+import xml.etree.ElementTree as ET
+import re
+from email.utils import parsedate_to_datetime
 
 # Force root directory into sys.path for Vercel runtime resolution
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -743,6 +746,37 @@ def extract_text(content: Any) -> str:
         return str(content[0])
     return str(content)
 
+SACHET_RSS = "https://sachet.ndma.gov.in/cap_public_website/rss/rss_india.xml"
+
+
+def reverse_geocode(lat: float, lng: float):
+    """Returns a list of place names (district, city, locality...) for the coordinates."""
+    try:
+        r = requests.get(
+            "https://api.bigdatacloud.net/data/reverse-geocode-client",
+            params={"latitude": lat, "longitude": lng, "localityLanguage": "en"},
+            timeout=5,
+        )
+        r.raise_for_status()
+        d = r.json()
+
+        names = [d.get("city"), d.get("locality")]
+        for a in d.get("localityInfo", {}).get("administrative", []):
+            names.append(a.get("name"))
+
+        cleaned = []
+        for n in names:
+            if not n:
+                continue
+            n = re.sub(r"\s+(district|taluk|tehsil)$", "", n, flags=re.I).strip()
+            if len(n) > 2 and n.lower() not in ("india", "tamil nadu") and n not in cleaned:
+                cleaned.append(n)
+        return cleaned, d.get("principalSubdivision", "")
+    except Exception as e:
+        logger.error(f"Reverse geocode failed: {e}")
+        return [], ""
+
+
 
 # --- 5. Endpoints ---
 @app.post("/chat", response_model=ChatResponse)
@@ -839,6 +873,54 @@ async def search_airports(query: str):
 
     return matches[:10]
 
+@app.get("/alerts")
+def get_sachet_alerts(lat: float, lng: float):   # plain def, not async (requests is blocking)
+    names, state = reverse_geocode(lat, lng)
+    logger.info(f"alerts lookup: names={names} state={state!r}")
+    if not names:
+        return []
+
+    pattern = re.compile(r"\b(" + "|".join(re.escape(n) for n in names) + r")\b", re.IGNORECASE)
+
+    try:
+        res = requests.get(SACHET_RSS, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        res.raise_for_status()
+        root = ET.fromstring(res.content)      # bytes, so the XML encoding header is honored
+    except (requests.RequestException, ET.ParseError) as e:
+        logger.error(f"SACHET feed error: {e}")
+        raise HTTPException(status_code=502, detail="Unable to retrieve SACHET alerts.")
+
+    alerts = []
+    for item in root.findall("./channel/item"):
+        title = (item.findtext("title") or "").strip()
+        if not pattern.search(title):
+            continue
+
+        author = item.findtext("author") or ""
+        source = author[author.find("(") + 1 : author.rfind(")")] if "(" in author else "NDMA SACHET"
+        low = title.lower()
+        severity = "Severe" if "severe flood" in low else "Moderate"
+
+        pub = item.findtext("pubDate")
+        try:
+            published = parsedate_to_datetime(pub).isoformat() if pub else None
+        except Exception:
+            published = pub
+
+        alerts.append({
+            "id": item.findtext("guid") or item.findtext("link"),
+            "headline": title,
+            "severity": severity,
+            "category": item.findtext("category") or "Met",
+            "description": title,
+            "areaDesc": f"{names[0]}, {state}",
+            "statusType": "present",
+            "source": f"NDMA SACHET / {source}",
+            "link": item.findtext("link"),
+            "published": published,
+        })
+
+    return alerts[:10]
 
 @app.get("/health")
 async def health_check():
