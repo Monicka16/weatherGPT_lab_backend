@@ -922,6 +922,87 @@ def get_sachet_alerts(lat: float, lng: float):   # plain def, not async (request
 
     return alerts[:10]
 
+
+
+@app.get("/air-quality")
+async def get_air_quality(latitude: float, longitude: float):
+    if not -90 <= latitude <= 90:
+        raise HTTPException(
+            status_code=400,
+            detail="Latitude must be between -90 and 90."
+        )
+
+    if not -180 <= longitude <= 180:
+        raise HTTPException(
+            status_code=400,
+            detail="Longitude must be between -180 and 180."
+        )
+
+    url = os.environ.get(
+        "AIR_QUALITY_API_EP",
+        "https://air-quality-api.open-meteo.com/v1/air-quality"
+    )
+
+    try:
+        response = requests.get(
+            url,
+            params={
+                "latitude": latitude,
+                "longitude": longitude,
+                "current": "european_aqi,pm2_5,pm10,ozone",
+                "timezone": "auto",
+            },
+            timeout=15,
+        )
+
+        response.raise_for_status()
+        data = response.json()
+        current = data.get("current")
+
+        if not current or current.get("european_aqi") is None:
+            raise HTTPException(
+                status_code=502,
+                detail="Air quality data is currently unavailable."
+            )
+
+        aqi = current["european_aqi"]
+
+        if aqi <= 20:
+            category = "Good"
+        elif aqi <= 40:
+            category = "Fair"
+        elif aqi <= 60:
+            category = "Moderate"
+        elif aqi <= 80:
+            category = "Poor"
+        elif aqi <= 100:
+            category = "Very Poor"
+        else:
+            category = "Extremely Poor"
+
+        return {
+            "latitude": data.get("latitude"),
+            "longitude": data.get("longitude"),
+            "time": current.get("time"),
+            "aqi": aqi,
+            "aqi_scale": "European AQI",
+            "category": category,
+            "pm2_5": current.get("pm2_5"),
+            "pm10": current.get("pm10"),
+            "ozone": current.get("ozone"),
+        }
+
+    except requests.RequestException as e:
+        logger.error("Air quality API error: %s", e)
+
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to retrieve air quality data."
+        ) from e
+
+
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "agent_ready": agent_executor is not None}
