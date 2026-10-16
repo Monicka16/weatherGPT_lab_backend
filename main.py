@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
 from aviation_weather import fetch_metar
-from airport_database import AIRPORTS
+from airport_database import get_airports
 import xml.etree.ElementTree as ET
 import re
 from email.utils import parsedate_to_datetime
@@ -855,9 +855,10 @@ async def search_airports(query: str):
     if not query:
         return []
 
+    airports = get_airports()
     matches = []
 
-    for airport in AIRPORTS:
+    for airport in airports:
         searchable_text = " ".join(
             [
                 airport["name"],
@@ -870,6 +871,21 @@ async def search_airports(query: str):
 
         if query in searchable_text:
             matches.append(airport)
+
+    # Put exact code matches and names starting with the query first.
+    matches.sort(
+        key=lambda airport: (
+            0 if query in (
+                airport["iata"].lower(),
+                airport["icao"].lower(),
+            ) else
+            1 if (
+                airport["name"].lower().startswith(query)
+                or airport["city"].lower().startswith(query)
+            ) else
+            2
+        )
+    )
 
     return matches[:10]
 

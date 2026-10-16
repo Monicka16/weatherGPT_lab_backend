@@ -1,4 +1,23 @@
-AIRPORTS = [
+import csv
+import io
+import logging
+import threading
+import time
+
+import requests
+
+
+logger = logging.getLogger(__name__)
+
+AIRPORTS_URL = (
+    "https://raw.githubusercontent.com/"
+    "davidmegginson/ourairports-data/main/airports.csv"
+)
+
+CACHE_TTL_SECONDS = 24 * 60 * 60
+
+# Small fallback for when the dataset cannot be downloaded
+FALLBACK_AIRPORTS = [
     {
         "name": "Coimbatore International Airport",
         "city": "Coimbatore",
@@ -34,116 +53,119 @@ AIRPORTS = [
         "iata": "DEL",
         "icao": "VIDP",
     },
-    {
-        "name": "Rajiv Gandhi International Airport",
-        "city": "Hyderabad",
-        "country": "India",
-        "iata": "HYD",
-        "icao": "VOHS",
-    },
-    {
-        "name": "Cochin International Airport",
-        "city": "Kochi",
-        "country": "India",
-        "iata": "COK",
-        "icao": "VOCI",
-    },
-    {
-        "name": "Pune International Airport",
-        "city": "Pune",
-        "country": "India",
-        "iata": "PNQ",
-        "icao": "VAPO",
-    },
-    {
-        "name": "Goa International Airport",
-        "city": "Goa",
-        "country": "India",
-        "iata": "GOI",
-        "icao": "VOGO",
-    },
-    {
-        "name": "Netaji Subhas Chandra Bose International Airport",
-        "city": "Kolkata",
-        "country": "India",
-        "iata": "CCU",
-        "icao": "VECC",
-    },
-    {
-        "name": "Singapore Changi Airport",
-        "city": "Singapore",
-        "country": "Singapore",
-        "iata": "SIN",
-        "icao": "WSSS",
-    },
-    {
-        "name": "Heathrow Airport",
-        "city": "London",
-        "country": "United Kingdom",
-        "iata": "LHR",
-        "icao": "EGLL",
-    },
-    {
-        "name": "Dubai International Airport",
-        "city": "Dubai",
-        "country": "United Arab Emirates",
-        "iata": "DXB",
-        "icao": "OMDB",
-    },
-    {
-        "name": "Hamad International Airport",
-        "city": "Doha",
-        "country": "Qatar",
-        "iata": "DOH",
-        "icao": "OTHH",
-    },
-    {
-        "name": "John F. Kennedy International Airport",
-        "city": "New York",
-        "country": "United States",
-        "iata": "JFK",
-        "icao": "KJFK",
-    },
-    {
-        "name": "Los Angeles International Airport",
-        "city": "Los Angeles",
-        "country": "United States",
-        "iata": "LAX",
-        "icao": "KLAX",
-    },
-    {
-        "name": "San Francisco International Airport",
-        "city": "San Francisco",
-        "country": "United States",
-        "iata": "SFO",
-        "icao": "KSFO",
-    },
-    {
-        "name": "Sydney Kingsford Smith Airport",
-        "city": "Sydney",
-        "country": "Australia",
-        "iata": "SYD",
-        "icao": "YSSY",
-    },
-    {
-        "name": "Tokyo Haneda Airport",
-        "city": "Tokyo",
-        "country": "Japan",
-        "iata": "HND",
-        "icao": "RJTT",
-    },
-    {
-        "name": "Frankfurt Airport",
-        "city": "Frankfurt",
-        "country": "Germany",
-        "iata": "FRA",
-        "icao": "EDDF",
-    },
-    {
-        "name": "Paris Charles de Gaulle Airport",
-        "city": "Paris",
-        "country": "France",
-        "iata": "CDG",
-        "icao": "LFPG",
-    },
 ]
+
+_airport_cache = []
+_last_fetched = 0
+_cache_lock = threading.Lock()
+
+
+def _download_airports():
+    """Download and parse airports with scheduled airline service."""
+    response = requests.get(AIRPORTS_URL, timeout=20)
+    response.raise_for_status()
+
+    reader = csv.DictReader(io.StringIO(response.text))
+    airports = []
+
+    for row in reader:
+        airport_type = (row.get("type") or "").strip()
+        scheduled_service = (
+            row.get("scheduled_service") or ""
+        ).strip().lower()
+
+        iata = (row.get("iata_code") or "").strip().upper()
+        icao = (row.get("icao_code") or "").strip().upper()
+
+        # Keep useful airports with scheduled service and both codes.
+        if (
+            airport_type not in {
+                "large_airport",
+                "medium_airport",
+                "small_airport",
+            }
+            or scheduled_service != "yes"
+            or not iata
+            or not icao
+        ):
+            continue
+
+        name = (row.get("name") or "").strip()
+        city = (row.get("municipality") or "").strip()
+        country_code = (row.get("iso_country") or "").strip().upper()
+
+        if not name:
+            continue
+
+        airports.append({
+            "name": name,
+            "city": city or name,
+            # OurAirports provides ISO country codes, e.g. IN, US, GB.
+            "country": country_code,
+            "iata": iata,
+            "icao": icao,
+            "_type": airport_type,
+        })
+
+    # Prioritize major airports when multiple results match.
+    priority = {
+        "large_airport": 0,
+        "medium_airport": 1,
+        "small_airport": 2,
+    }
+
+    airports.sort(
+        key=lambda airport: (
+            priority.get(airport["_type"], 3),
+            airport["name"].lower(),
+        )
+    )
+
+    # Keep the existing public response schema unchanged.
+    for airport in airports:
+        airport.pop("_type", None)
+
+    if not airports:
+        raise ValueError("The airport dataset contained no usable airports.")
+
+    return airports
+
+
+def get_airports():
+    """Return cached airport data, refreshing it every 24 hours."""
+    global _airport_cache, _last_fetched
+
+    now = time.monotonic()
+
+    if (
+        _airport_cache
+        and now - _last_fetched < CACHE_TTL_SECONDS
+    ):
+        return _airport_cache
+
+    with _cache_lock:
+        now = time.monotonic()
+
+        if (
+            _airport_cache
+            and now - _last_fetched < CACHE_TTL_SECONDS
+        ):
+            return _airport_cache
+
+        try:
+            airports = _download_airports()
+            _airport_cache = airports
+            _last_fetched = time.monotonic()
+
+            logger.info("Loaded %s airports.", len(airports))
+            return _airport_cache
+
+        except (requests.RequestException, ValueError, csv.Error) as exc:
+            logger.warning("Could not refresh airport data: %s", exc)
+
+            # Use previously downloaded data if available.
+            if _airport_cache:
+                return _airport_cache
+
+            # Otherwise, keep basic airport search working.
+            return FALLBACK_AIRPORTS
