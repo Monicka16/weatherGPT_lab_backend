@@ -820,32 +820,48 @@ async def chat_endpoint(request: ChatRequest):
     finally:
         temperature_unit_context.reset(unit_token)
 
+
 @app.get("/aviation/metar")
 async def aviation_metar(icao: str):
     try:
         metar = fetch_metar(icao)
 
         if metar is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No recent METAR available for {icao.upper()}."
-            )
+            return {
+                "icao": icao.strip().upper(),
+                "available": False,
+                "message": "METAR data is currently unavailable for this airport."
+            }
 
         return metar
 
+    except HTTPException:
+        raise
+
     except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
+        logger.warning(f"METAR data unavailable for {icao.upper()}: {e}")
+        return {
+            "icao": icao.upper(),
+            "available": False,
+            "message": "METAR data is currently unavailable for this airport."
+        }
 
     except requests.RequestException as e:
-        logger.error(f"Aviation weather API error: {e}")
+        logger.error(f"Aviation weather API error for {icao.upper()}: {e}")
+        return {
+            "icao": icao.upper(),
+            "available": False,
+            "message": "Unable to retrieve METAR data right now."
+        }
 
-        raise HTTPException(
-            status_code=502,
-            detail="Unable to retrieve aviation weather data."
-        )
+    except Exception as e:
+        logger.exception(f"Unexpected METAR error for {icao.upper()}: {e}")
+        return {
+            "icao": icao.upper(),
+            "available": False,
+            "message": "METAR data is currently unavailable for this airport."
+        }
+
 
 
 @app.get("/aviation/airports")
