@@ -57,4 +57,3 @@ def fetch_metar(icao: str):
         return None
 
     return data[0]
-
