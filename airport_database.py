@@ -76,6 +76,10 @@ def _download_airports():
 
         iata = (row.get("iata_code") or "").strip().upper()
         icao = (row.get("icao_code") or "").strip().upper()
+        country_code = (row.get("iso_country") or "").strip().upper()
+
+        if country_code != "IN":
+            continue
 
         # Keep useful airports with scheduled service and both codes.
         if (
@@ -84,16 +88,13 @@ def _download_airports():
                 "medium_airport",
                 "small_airport",
             }
-            or scheduled_service != "yes"
-            or not iata
-            or not icao
+            or len(icao) != 4
         ):
             continue
 
         name = (row.get("name") or "").strip()
         city = (row.get("municipality") or "").strip()
-        country_code = (row.get("iso_country") or "").strip().upper()
-
+         
         if not name:
             continue
 
@@ -101,7 +102,7 @@ def _download_airports():
             "name": name,
             "city": city or name,
             # OurAirports provides ISO country codes, e.g. IN, US, GB.
-            "country": country_code,
+            "country": "India",
             "iata": iata,
             "icao": icao,
             "_type": airport_type,
